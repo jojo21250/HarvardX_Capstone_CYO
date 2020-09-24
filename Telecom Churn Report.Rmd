@@ -1,0 +1,374 @@
+---
+title: "Telecommunications Customer Churn Report"
+author: "edX user jojo21250"
+date: "9/22/2020"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview  
+  
+The aim of this project is to predict customer churn at a fictional telecommunications company. Predicting customer churn serves two functions. First, it allows the company to assess its subscriber base and more accurately forecast future revenue. Second, it provides the company with valuable intelligence about which customers should be targeted for retention efforts. 
+  
+This report explores a fictional dataset of customer information and evaluates several prediction methods. The data includes individualized information about past customers, such as a customer's unique ID, which services were purchased, and whether or not the customer churned. It contains 7043 observations (each customer is one row) of 21 variables.  
+  
+An overview of the variables and their possible values:  
+
+* **personal information**
+  + customerID (string of characters)
+  + gender (male/female) 
+  + senior citizen (yes/no) 
+  + partner(yes/no) 
+  + dependents (yes/no)
+* **service information** 
+  + tenure (numeric value from 0 - 75) 
+  + phone service (yes/no)
+  + multiple lines (yes/no/no phone service)
+  + internet service (DSL/fiber optic/no)
+  + online security (yes/no/no internet service)
+  + online backup (yes/no/no internet service)
+  + device protection (yes/no/no internet service)
+  + tech support (yes/no/no internet service)
+  + streaming TV (yes/no/no internet service)
+  + streaming movies (yes/no/no internet service)
+* **billing information**: 
+  + contract type (month-to-month/one year/two year)
+  + paperless billing (yes/no)
+  + payment method (electronic check/mailed check/automatic bank transfer/automatic credit card payment)
+  + monthly charges (numeric value 10 - 120)
+  + total charges (numeric value up to 9000)
+  + churn (yes/no)
+  
+The data is provided on the GitHub page of IBM employee Scott D'Angelo. You can find the relevant repository [here](https://github.com/IBM/telco-customer-churn-on-icp4d). The contents of the repository fall under the Apache 2.0 license, which can be viewed [here](https://github.com/IBM/telco-customer-churn-on-icp4d/blob/master/LICENSE).  
+  
+## Methods and Analysis - Part 1: Data Preparation and Exploration
+  
+The first step is to load the data and perform some basic preparation steps. Many of the variables contain words as observation, such as "Yes" and "No". These should be treated as factors, not characters.  
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+#Get packages to run the script
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(caretEnsemble)) install.packages("caretEnsemble", repos = "http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+
+#Get packages required for this RMarkdown report
+if(!require(gridExtra)) install.packages("gridExtra", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+
+#Download the data and read the CSV into an object
+dl <- tempfile()
+download.file("https://raw.githubusercontent.com/jojo21250/HarvardX_Capstone_CYO/master/Telco-Customer-Churn.csv", dl)
+dat <- read_csv(dl)
+
+#Remove unneeded object
+rm(dl)
+```  
+
+```{r, echo = TRUE}
+#Change class of character variables to factors 
+dat <- dat %>% mutate_if(is.character,as.factor)
+```  
+  
+The SeniorCitizen variable contains observations such as "1" and "0", which indicate whether or not a customer is a senior citizen. This is a numeric value; it should be changed to factor as well.  
+
+```{r, echo = TRUE}
+#Change class of SeniorCitizen to factor, 
+#because it is just a TRUE/FALSE style observation represented by 1/0,
+#and NOT a representation of some quantity
+dat <- dat %>% mutate(SeniorCitizen = as.factor(SeniorCitizen))
+```  
+  
+A quick check for NAs shows that there are eleven.    
+```{r, echo = TRUE}
+sum(is.na(dat))
+```  
+Eleven NAs in 7043 observations is not very significant. However, machine learning algorithms require some way of dealing with NAs. Any method will have a minimal impact on the models and the predictions produced. For the sake of convenience, this report will use the **na.roughfix** method from the randomForest package. This method imputes the median value for missing numerics and the mode value for missing factors. It does not remove or ignore rows with NAs.  
+  
+Below is a snippet of the data. Only the first nine columns are shown due to space limitations.
+```{r, echo = FALSE}
+head(dat[,1:9]) %>% kable()
+```  
+
+\newpage
+
+Next, the data is explored with some visualizations. The chart below shows the distribution of customers by tenure (the length of time they have been a customer). A significant portion of the customer base is relatively new. Without even looking at exact numbers, it is apparent that much of the churn occurs among those newer customers.  
+
+```{r, echo = FALSE}
+dat %>%
+  ggplot(aes(x = tenure, fill = Churn)) +
+  geom_histogram(binwidth = 2) +
+  labs(x = "Tenure (months)", y = "Number of Customers") +
+  ggtitle("Distribution of Customers by Tenure") +
+  theme(plot.title = element_text(hjust = 0.5))
+```  
+  
+What proportion of customers leave after their first month? An alarming 62%.
+
+```{r, echo = TRUE}
+#more than half of customers with a tenure of 1 are churning 
+dat %>% filter(tenure == 1) %>% summarize(mean = mean(.$Churn == "Yes")) %>% kable()
+```  
+
+\newpage
+
+However, there are also some area of strength. Among internet service customers, those who purchase the online security and online backup products churn at lower rates than those who do not. Examine the "Yes" bars below. (Customers represented in the "No internet" bar are not eligible to purchase these products. This unique group is discussed further below.)
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+online_security <- dat %>%
+  ggplot(aes(x = OnlineSecurity, fill = Churn)) +
+  geom_histogram(stat = "count") +
+  labs(x = "Online Security", y = "Number of Customers") +
+  scale_x_discrete(labels = c("No" = "No", "No internet service" = "No internet", "Yes" = "Yes")) +
+  ggtitle("Online Security Subscribers") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+tech_support <- dat %>%
+  ggplot(aes(x = TechSupport, fill = Churn)) +
+  geom_histogram(stat = "count") +
+  labs(x = "Tech Support", y = "Number of Customers") +
+  scale_x_discrete(labels = c("No" = "No", "No internet service" = "No internet", "Yes" = "Yes")) +
+  ggtitle("Tech Support Subscribers") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(online_security, tech_support, ncol = 2)
+
+```  
+
+\newpage
+ 
+The company enjoys an intuitive advantage among customers with longer contracts. These customers churn less.  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+dat %>%
+  ggplot(aes(x = Contract, fill = Churn)) +
+  geom_histogram(stat = "count") +
+  labs(x = "Contract Type", y = "Number of Customers") +
+  ggtitle("Churn Rates - Contract Type") +
+  theme(plot.title = element_text(hjust = 0.5))
+```  
+  
+\newpage
+
+Customers with lower monthly bills churn less, as do customers who do not buy internet service.  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+dat %>%
+  ggplot(aes(x = MonthlyCharges, fill = Churn)) +
+  geom_histogram(binwidth = 6.25) +
+  labs(x = "Monthly Charges", y = "Number of Customers") +
+  ggtitle("Distribution of Customers by Monthly Charges") +
+  theme(plot.title = element_text(hjust = 0.5))
+dat %>%
+  ggplot(aes(x = InternetService, fill = Churn)) +
+  geom_histogram(stat = "count") +
+  labs(x = "Type of Internet Service", y = "Number of Customers") +
+  ggtitle("Churn Rates - Internet Service Type") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+``` 
+  
+  There is considerable overlap between these last two groups. Customers who do not buy internet service are 1526 of the 3460 customers with monthly charges of less than $70. 
+  
+## Methods and Analysis - Part 2: Creating a Model
+  
+The client wants to solve a classification problem. Customers fall into two classes: those who churn and those who remain with the company. Large datasets with many variables are a perfect use-case for machine learning with the caret package. The machine learning models described in this report consider all other variables in the dataset as predictive features to predict the classification of a customer's churn status as either "Yes" or "No".  
+
+There is only one exception: customerID. Customers are assigned customerIDs randomly to protect their anonymity. The customerID reflects no information about the customer. Additionally, each customerID occurs exactly once in the dataset. Therefore, it is not possible to find any meaningful patterns which involve this variable. The customerID column is withheld when specifying training data for the machine learning models.  
+
+The data is split into training and test sets:  
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+#Create a test index
+test_index <- createDataPartition(dat$Churn, times = 1, p = 0.5, list = FALSE)
+
+#Create training and test sets
+train_set <- dat[-test_index,]
+test_set <- dat[test_index,]
+```  
+  
+The first model is a random forest model. This popular model often produces good results even without careful tuning. The code below will optimize the model for overall accuracy.
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+#normally this may be set to TRUE so that the user can observe the the work in progress
+#it has been set to FALSE to produce a cleaner report
+trainctrl <- trainControl(verboseIter = FALSE)
+
+#mtry parameter tells RF how many splits to try at each node
+mtry <- expand.grid(mtry = seq(2,10,2))
+
+#fit the RF model
+fitRF <- train(Churn ~ ., 
+               method = "rf", 
+               data = train_set[,2:21], 
+               na.action = na.roughfix,
+               metric = "Accuracy",
+               tuneGrid = mtry,
+               trControl = trainctrl) 
+```
+
+Next the model is used to create predictions on the test set, so that it can be evaluated.
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+y_hat_rf <- predict(fitRF, test_set, na.action = na.roughfix)
+
+#Inspect the confusions matrix to measure the performance of the random forest model
+rf_cm <- confusionMatrix(data = y_hat_rf,
+                reference = test_set$Churn,
+                positive = "Yes")
+
+rf_cm
+```
+  
+The overall accuracy is approximately %80. This may seem like a great performance, but it is due partly to the imbalanced classes. Many more customers stay ("No" class) than churn ("Yes" class), and the model is better at predicting the "No" class than the "Yes" class. A quick look at the confusion matrix - and the "sensitivity" and "specificity" statistics - makes this apparent. The model is correct about 80% of the time overall, but it only correctly identifies customers who churn about 50% of the time.  
+
+The process is repeated with two more machine learning algorithms: k-nearest neighbors (knn) and generalized linear model (glm). The code used to fit these models is quite similar to the code shown for the random forest model, so it is not shown in this PDF report. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+#k is a tuning parameter for knn which tells it how many neighbors to consider
+k_tune <- expand.grid(k = seq(3,35,2))
+
+#Try training a knn model
+fitKNN <- train(Churn ~ ., 
+                method = "knn", 
+                data = train_set[,2:21], 
+                na.action = na.roughfix,
+                metric = "Accuracy",
+                tuneGrid = k_tune,
+                trControl = trainctrl)
+
+#Make predictions using the knn model on the test set
+y_hat_knn <- predict(fitKNN, test_set, na.action = na.roughfix)
+
+#Try a glm model
+fitGLM <- train(Churn ~ ., 
+                method = "glm", 
+                data = train_set[,2:21], 
+                na.action = na.roughfix,
+                metric = "Accuracy",
+                trControl = trainctrl)
+
+#Make predictions using glm
+y_hat_glm <- predict(fitGLM, test_set, na.action = na.roughfix)
+```  
+
+Here is the confusion matrix for the KNN model:  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+knn_cm <- confusionMatrix(data = y_hat_knn,
+                reference = test_set$Churn,
+                positive = "Yes")
+
+knn_cm
+```  
+
+Here is the confusion matrix for the GLM model:  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+glm_cm <- confusionMatrix(data = y_hat_glm,
+                reference = test_set$Churn,
+                positive = "Yes")
+
+glm_cm
+```
+
+None of these models drastically outshines the others. In fact, they have similar performance characteristics: poor sensitivity and high specificity. However, they do not make the *exact* same predictions. Perhaps performance can be improved by a few percentage points by using them together in an ensemble. This can be done easily with the caretEnsemble package.    
+  
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+trainctrl_ensemble <- trainControl(method = "cv",
+                                   number = 5, 
+                                   savePredictions = "final",
+                                   classProbs = TRUE)
+
+#tuneList allows us to pass tuning parameters to individual models
+#pass the optimal tuning parameters from previous model fittings in this report to reduce computation
+tunelist_ensemble <- list(
+                          glm = caretModelSpec(method = "glm"),
+                          rf = caretModelSpec(method = "rf", tuneGrid = data.frame(.mtry = 4)),
+                          knn = caretModelSpec(method = "knn", tuneGrid = data.frame(.k = 29)) 
+                          )
+
+#use tuneList instead of methodList to pass tuning parameters
+model_list <- caretList(Churn ~ .,
+                        data = na.roughfix(train_set[,2:21]),
+                        trControl = trainctrl_ensemble,
+                        tuneList = tunelist_ensemble,
+                        continue_on_fail = FALSE, 
+                        preProcess = c("center","scale"))
+```  
+  
+An ensemble will take the majority vote of the three algorithms. When building an ensemble, it makes sense to use algorithms that have some variation in their respective predictions to provide a diversity of predictions in the votes. If the models are too similar to each other, they all vote the same way and there is nothing gained by using multiple models instead of just one. The caretEnsemble package provides a simple way to inspect the correlation of the models in the ensemble with the modelCor() function.  
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+modelCor(resamples(model_list)) %>% kable()
+```  
+
+This is not excellent diversity, but the ensemble will be built anyway.
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+ensemble <- caretEnsemble(
+  model_list, 
+  metric="ROC",
+  trControl=trainControl(
+    number=2,
+    summaryFunction=twoClassSummary,
+    classProbs=TRUE
+  ))
+
+#Make predictions using the ensemble
+y_hat_ensemble <- predict(ensemble, test_set, na.action = na.roughfix)
+```
+
+Here is the confusion matrix for the ensemble predictions:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+#Examine the accuracy of the ensemble
+ensemble_cm <- confusionMatrix(data = y_hat_ensemble,
+                reference = test_set$Churn,
+                positive = "Yes")
+
+ensemble_cm
+```  
+
+Overall, the ensemble performs similarly to the individual models.
+
+## Results  
+
+The machine learning approach performs well enough to provide useful information to the company. It outperforms the theoretical naive approach of simply guessing the mode classification for every sample. The main shortcoming is sensitivity. The best models only identify customers who will churn about half the time. However, it may be that there is simply not useful information among the predictive features to improve sensitivity further. The table below summarizes the model results. For comparison, the naive approach is also shown.  
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+Model <- c("Naive Approach", "Random Forest", "K-Nearest Neighbors", "Generalized Liner Model", "Ensemble")
+
+Accuracy <- c(mean(dat$Churn == "No"), rf_cm$overall[['Accuracy']], knn_cm$overall[['Accuracy']], glm_cm$overall[['Accuracy']], ensemble_cm$overall[['Accuracy']])
+
+Sensitivity <- c(0, rf_cm$byClass[[1]], knn_cm$byClass[[1]], glm_cm$byClass[[1]], ensemble_cm$byClass[[1]])
+
+results_table <- data.frame(Model, Accuracy, Sensitivity)
+
+results_table %>% kable()
+```
+  
+The GLM and ensemble models stand out as the best performers. The random forest model has similar accuracy, but it falls behind in sensitivity, which is an important metric for this situation. (It is important to detect the customers who will churn so that the company can attempt to retain them.) It is worth noting that the GLM model can be built in a tiny fraction of the time it takes to build the ensemble. For this reason, the GLM model is a clear winner. It could practically be scaled to handle millions of observations - perhaps the company's entire set of customer records. The random forest, k-nearest neighbors, and ensemble models are too computationally intensive to scale easily.
+
+## Conclusion
+
+This project aimed to predict customer churn at a telecommunications company in order to provide that company with useful business intelligence. Several approaches were tested, and the best model yielded an overall accuracy of approximately 80% and sensitivity to churning of about 50-55%.  
+
+Uncertainty is the norm in business, and conditions do not remain stable long enough to allow the development of perfect forecasting models. The model is accurate enough that it can serve as a useful tool for predicting future revenue when combined with other information (predictions about how many new customers will be added, predictions about changing prices for TV content, etc.).
+
+In broad data science terms, a sensitivity of 0.50 - 0.55 is not stellar. In real-world terms, the model has successfully flagged half of the customers who are going to leave next month, in addition to a handful of false positives (the positive prediction value is around 65%). This is highly actionable information, because this is a relatively small group of customers who can be targeted with retention offers that should not be offered to the broader population, such as discounts or bonus services that incentivize staying with the company. At the very least, the model provides a short list of customers worth reaching out to.
+
+The data exploration yielded some insights that merit further investigation. Why are so many customers trying the company's service for one month, and then leaving? Is there something the company could do better in order to retain them? Why do the online security and online backup features seem to associated with customer loyalty? Why do customers with higher bills churn more frequently? This project lacks the tools to answer these questions here and now. However, the data provides the company with a useful starting point for further research.
+
+The greatest shortcoming of this project was the middling sensitivity achieved by the best model. Future efforts should explore additional models with the goal of achieving higher sensitivity. Future efforts should also consider reworking the ensemble to include models with similar accuracy but lower correlation.
